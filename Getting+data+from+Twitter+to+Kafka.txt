@@ -1,0 +1,100 @@
+
+%%configure -f
+{
+    "conf": {
+        "spark.jars.packages": "org.apache.spark:spark-streaming_2.11:2.1.0,org.apache.bahir:spark-streaming-twitter_2.11:2.1.0,org.apache.spark:spark-streaming-kafka-0-8_2.10:2.1.0,com.google.code.gson:gson:2.4",
+        "spark.jars.excludes": "org.scala-lang:scala-reflect,org.apache.spark:spark-tags_2.11"
+    }
+}
+
+%%bash 
+/usr/hdp/current/kafka-broker/bin/kafka-topics.sh --create --replication-factor 3 --partitions 8 --topic twitterdata --zookeeper 'zk0-kafka.2ss2lwbngdxevflg4be4uhuljg.dx.internal.cloudapp.net:2181,zk1-kafka.2ss2lwbngdxevflg4be4uhuljg.dx.internal.cloudapp.net:2181'
+
+
+import org.apache.spark.streaming._
+import org.apache.spark.streaming.twitter._
+import org.apache.spark.streaming.kafka._
+import org.apache.kafka.clients.producer.{KafkaProducer, ProducerConfig, ProducerRecord}
+import java.util.HashMap
+import com.google.gson.Gson
+// Twitter configuration
+val consumerKey="Nuebph7WXa85iGgyrZTBZdAIB"
+val consumerSecret="22ovPOMfjyXhIkU2RqHxTS5uqDh38CRMn12A7cP6PI6Ya1ifPJ"
+val accessToken="407512570-NPNYAuunYVklmKkVPkvKNjKxh5df8gxvFQeiDIwX"
+val accessTokenSecret="jJYTCstD5MzzC87hMQxG3Nxxl1jSHXt57MtwzkGLJ3RZj"
+
+//Words that we want to filter tweets for.
+
+//val filters=Array("the","is","are","then","it","america","coffee","trump","bush","comptia","love","hate")
+val filters=Array("comptia","comptiaperks","comptiaadvocacy","techjobs","womenintech")
+
+// Kafka configuration
+// kafkaBrokers should contain a comma-delimited list of brokers. For example:
+// kafkaBrokers = "wn0-kafka.liftazhqudlunpo4tkvapo234g.dx.internal.cloudapp.net:9092,wn1-kafka.liftazhqudlunpo4tkvapo234g.dx.internal.cloudapp.net:9092,wn2-kafka.liftazhqudlunpo4tkvapo234g.dx.internal.cloudapp.net:9092"
+
+val kafkaBrokers="wn0-kafka.2ss2lwbngdxevflg4be4uhuljg.dx.internal.cloudapp.net:9092,wn1-kafka.2ss2lwbngdxevflg4be4uhuljg.dx.internal.cloudapp.net:9092"
+val kafkaTopic="twitterdata"
+// Make the Twitter config visible to Twitter4j
+System.setProperty("twitter4j.oauth.consumerKey", consumerKey)
+System.setProperty("twitter4j.oauth.consumerSecret", consumerSecret)
+System.setProperty("twitter4j.oauth.accessToken", accessToken)
+System.setProperty("twitter4j.oauth.accessTokenSecret", accessTokenSecret)
+println("Finished configuring Twitter clients")
+
+
+
+// Create an accumulator so we can track the number of tweets emitted to Kafka
+
+
+
+val numTweets = sc.accumulator(0L,"Tweets sent to Kafka")
+
+// The streaming context (DStream) for reading from Twitter and writing to Kafka
+def createStreamingContext(): StreamingContext = {
+    // Create the Kafka producer
+    val producerProperties = new HashMap[String, Object]()
+    producerProperties.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, kafkaBrokers)
+    producerProperties.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG,
+                           "org.apache.kafka.common.serialization.StringSerializer")
+    producerProperties.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG,
+                           "org.apache.kafka.common.serialization.StringSerializer")
+    
+    // set up the streaming context
+    val ssc = new StreamingContext(sc, Seconds(5))
+    // set up the stream, which we just convert to JSON
+    val stream = TwitterUtils.createStream(ssc, None, filters)
+    // Write the data to Kafka
+    print(stream)
+    stream.foreachRDD( rdd => {
+        rdd.foreachPartition( partition => {
+            val producer = new KafkaProducer[String, String](producerProperties)
+            partition.foreach( record => {
+                // Convert the data to JSON
+                val gson = new Gson()
+                val data = gson.toJson(record)
+                val message = new ProducerRecord[String, String](kafkaTopic, null, data)
+                // Send the tweet data to Kafka
+                producer.send(message)
+                // Increment the counter
+                numTweets +=1
+            })
+            producer.close()
+        })
+    })
+    ssc
+}
+
+val ssc = StreamingContext.getActiveOrCreate(createStreamingContext)
+println("Started")
+ssc.start()
+
+// Timeout after 60 seconds
+ssc.awaitTerminationOrTimeout(60000)
+println("Finished writting " + numTweets + " tweets to Kafka")
+
+
+
+
+
+
+

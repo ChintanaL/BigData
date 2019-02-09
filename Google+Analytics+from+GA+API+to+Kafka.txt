@@ -1,0 +1,64 @@
+
+%%configure -f
+{
+    "conf": {
+        "spark.jars.packages": "org.apache.spark:spark-streaming-kafka-0-8_2.10:2.2.0,com.google.code.gson:gson:2.4,com.crealytics:spark-google-analytics_2.11:1.1.2",
+        "spark.jars.excludes": 
+"org.scala-lang:scala-reflect,org.apache.spark:spark-tags_2.11"
+    }
+}
+
+
+
+
+%%bash 
+/usr/hdp/current/kafka-broker/bin/kafka-topics.sh --create --replication-factor 3 --partitions 8 --topic gadata --zookeeper 'zk0-kafka.2ss2lwbngdxevflg4be4uhuljg.dx.internal.cloudapp.net:2181,zk1-kafka.2ss2lwbngdxevflg4be4uhuljg.dx.internal.cloudapp.net:2181'
+
+import org.apache.spark.sql.SQLContext
+import com.google.gson.Gson
+
+
+val sqlContext = new SQLContext(sc)
+val df = sqlContext.read.format("com.crealytics.google.analytics").option("clientId", "753733683487-6mjftb8sh0nnnu22rumhvh82mr0oktev.apps.googleusercontent.com").option("clientSecret", "9CZYGkkF2GJ3YH1ERFZV59tR").option("refreshToken", "1/1gtqDfN1zG87qOAA0Uo1ta2iUZf9UlzQA0aXfkoJHpbZP_9eMLRsMGmtwI9_xL0R").option("ids", "ga:61001302").option("startDate", "7daysAgo").option("endDate", "yesterday").option("queryIndividualDays", "true").option("dimensions", "ga:userType").option("metrics", "ga:bounceRate,ga:sessions,ga:Bounces").load()
+val res = df.toJSON.map(new JSONObject(_).toString).collect()
+
+// Since the REST API returns an array of items,
+// it's easier to use as an array than deal with streaming
+
+val gson = new Gson()
+val jsonDataArray = gson.fromJson(res, classOf[Array[Object]])
+
+println("Retrieved data from Google Analytics.")
+
+
+
+// The Kafka broker hosts and topic used to write to Kafka
+val kafkaBrokers="wn0-kafka.2ss2lwbngdxevflg4be4uhuljg.dx.internal.cloudapp.net:9092,wn1-kafka.2ss2lwbngdxevflg4be4uhuljg.dx.internal.cloudapp.net:9092"
+val kafkaTopic="twitterdata"
+
+// Import classes used to write to Kafka via a producer
+import org.apache.kafka.clients.producer.{KafkaProducer, ProducerConfig, ProducerRecord}
+import java.util.HashMap
+
+// Create the Kafka producer
+val producerProperties = new HashMap[String, Object]()
+producerProperties.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, kafkaBrokers)
+producerProperties.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG,
+                           "org.apache.kafka.common.serialization.StringSerializer")
+producerProperties.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG,
+                           "org.apache.kafka.common.serialization.StringSerializer")
+val producer = new KafkaProducer[String, String](producerProperties)
+
+// Iterate over data and emit to Kafka
+jsonDataArray.foreach { row =>
+                // Get the row as a JSON string
+                val jsonData = gson.toJson(row)
+                // Create the message for Kafka
+                val message = new ProducerRecord[String, String](kafkaTopic, null, jsonData)
+                // Send the message
+                producer.send(message)
+                // Sleep a bit between sends to simulate streaming data
+                Thread.sleep(1000)
+             }
+producer.close()
+println("Finished writting Google Analytics Data to Kafka")

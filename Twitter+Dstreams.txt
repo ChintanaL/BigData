@@ -1,0 +1,111 @@
+
+%%configure -f
+{
+    "conf": {
+        "spark.jars.packages": "org.apache.spark:spark-streaming_2.11:2.1.0,org.apache.bahir:spark-streaming-twitter_2.11:2.1.0,org.apache.spark:spark-streaming-kafka-0-8_2.10:2.1.0,com.google.code.gson:gson:2.4",
+        "spark.jars.excludes": "org.scala-lang:scala-reflect,org.apache.spark:spark-tags_2.11"
+    }
+}
+
+//import java.util.HashMap
+import org.apache.kafka.clients.consumer.ConsumerRecord
+import org.apache.kafka.common.serialization.StringDeserializer
+import org.apache.spark.streaming._
+import org.apache.spark.streaming.kafka010._
+import org.apache.spark.streaming.kafka010.LocationStrategies._
+import org.apache.spark.streaming.kafka010.ConsumerStrategies._
+
+// For JSON schema inference
+import org.apache.spark.sql.catalyst.encoders.ExpressionEncoder
+import org.apache.spark.sql.Encoder
+import spark.implicits._
+
+// Kafka configuration
+// kafkaBrokers should contain a comma-delimited list of brokers. For example:
+// kafkaBrokers = "wn0-kafka.liftazhqudlunpo4tkvapo234g.dx.internal.cloudapp.net:9092,wn1-kafka.liftazhqudlunpo4tkvapo234g.dx.internal.cloudapp.net:9092,wn2-kafka.liftazhqudlunpo4tkvapo234g.dx.internal.cloudapp.net:9092"
+val kafkaBrokers = "your Kafka brokers"
+// The Kafka topic(s) to read from
+val topics = Array("twitterdata")
+// Batching interval when reading
+val batchInterval = 2
+
+
+// A function that creates a streaming context
+def createStreamingContext(): StreamingContext = {
+    
+    // Create a new StreamingContext from the default context.
+    val ssc = new StreamingContext(sc, Seconds(batchInterval))
+    
+    // Kafka parameters when reading
+    // auto.offset.reset = 'earliest' reads from the beginning of the queue
+    //     Set to 'latest' to only receive new messages as they are added to the queue.
+    val kafkaParams = Map[String, Object](
+        "bootstrap.servers" -> kafkaBrokers,
+        "key.deserializer" -> classOf[StringDeserializer],
+        "value.deserializer" ->  classOf[StringDeserializer],
+        "group.id" -> "test1",
+        "auto.offset.reset" -> "earliest",
+        "enable.auto.commit" -> (false: java.lang.Boolean)
+    )
+ // Create the stream from Kafka
+    val messageStream = KafkaUtils.createDirectStream[String, String](
+        ssc,
+        PreferConsistent,
+        Subscribe[String, String](topics, kafkaParams)
+        )
+    
+    // Get only the tweets (in JSON format)
+    val tweetsJSON = messageStream.map(record => (record.value))
+    
+    // Convert the records to JSON dataframes, so we can select interesting values
+    tweetsJSON.foreachRDD {
+        rdd =>
+        // because sometimes there's not really an RDD there
+        if(rdd.count() >=1) {
+            // Parse the JSON and infer a schema
+            val tweetObj = spark.sqlContext.read.json(rdd)
+            //tweetObj.printSchema()
+            // Grab the columns we want
+            val tweetInfo = tweetObj.select($"id", 
+                                            $"createdAt", 
+                                            $"lang", 
+                                            $"text", 
+                                           )                                           )
+            // Write data to HDInsight cluster storage
+            tweetInfo.write.mode("append").format("parquet").save("/example/tweets/")
+            // Show 5 in the console
+            tweetInfo.show(5)
+            // Create a temp view and store them there
+            tweetInfo.createOrReplaceTempView("TweetInfo")
+        }
+    }
+
+    
+    // Tell the stream to keep the data around for a minute, so it's there when we query later
+    ssc.remember(Minutes(4))
+    // Checkpoint for fault-tolerance
+    ssc.checkpoint("/tweetcheckpoint")
+    // Return the StreamingContext
+    ssc
+}
+
+// Stop any existing StreamingContext 
+val stopActiveContext = true
+if (stopActiveContext) {    
+  StreamingContext.getActive.foreach { _.stop(stopSparkContext = false) }
+} 
+
+// Get or create a StreamingContext
+val ssc = StreamingContext.getActiveOrCreate(createStreamingContext)
+
+// This starts the StreamingContext in the background. 
+ssc.start()
+
+// Set the stream to run with a timeout of batchInterval * 60 * 1000 seconds
+ssc.awaitTerminationOrTimeout(batchInterval * 60 * 1000)
+
+
+
+
+
+

@@ -1,0 +1,92 @@
+
+%%configure -f
+{
+    "name":"Spark-to-Cosmos_DB_Connector", 
+    "executorMemory": "8G", 
+    "executorCores": 2, 
+    "numExecutors":9,
+    "driverMemory" : "2G",
+    "conf": {
+        "spark.jars.packages": "org.apache.spark:spark-sql-kafka-0-10_2.11:2.2.0,com.microsoft.azure:azure-cosmosdb-spark_2.2.0_2.11:1.0.0,com.microsoft.azure:azure-documentdb:1.15.1", 
+        "spark.jars.excludes": "org.scala-lang:scala-reflect,org.apache.spark:spark-tags_2.11"
+    }
+}
+
+val kafkaBrokers="wn0-kafka.2ss2lwbngdxevflg4be4uhuljg.dx.internal.cloudapp.net:9092,wn1-kafka.2ss2lwbngdxevflg4be4uhuljg.dx.internal.cloudapp.net:9092"
+val kafkaTopic="twitterdata"
+
+println("broker and topic set.")
+
+
+// Import Necessary Libraries
+import org.joda.time._
+import org.joda.time.format._
+
+// Current version of the connector
+import com.microsoft.azure.cosmosdb.spark.schema._
+import com.microsoft.azure.cosmosdb.spark._
+import com.microsoft.azure.cosmosdb.spark.streaming.CosmosDBSinkProvider
+import com.microsoft.azure.cosmosdb.spark.config.Config
+
+var configMap = Map(
+    "Endpoint" -> "https://chinscosmosaccount.documents.azure.com:443/",
+    "Masterkey" -> "4y9b77QEHzU1hz5SVJpXwCuxAcrLoOEPGP2MXCv9loHbCsJVuJefbGVL8plUD0iNQGmWVSlYbY1OtkotpnTDfw==",
+    "Database" -> "kafkadata",
+    // use a ';' to delimit multiple regions
+    "PreferredRegions" -> "West US;",
+    "Collection" -> "kafkacollection"
+)
+
+println("Cosmos DB configuration set.")
+
+// Import bits useed for declaring schemas and working with JSON data
+import org.apache.spark.sql._
+import org.apache.spark.sql.types._
+import org.apache.spark.sql.functions._
+
+// Define a schema for the data
+val schema = (new StructType).add("id", StringType).add("text", StringType).add("created_at", StringType).add("lang", StringType)
+
+// Read from the Kafka stream source
+val kafka = spark.readStream.format("kafka").option("kafka.bootstrap.servers", kafkaBrokers).option("subscribe", kafkaTopic).option("startingOffsets","earliest").load()
+
+// Select the value of the Kafka message and apply the trip schema to it
+
+val twitterTweets = kafka.select(
+    from_json(col("value").cast("string"), schema) as "tweets")
+
+
+
+// The output of this cell is similar to the following value:
+// taxiData: org.apache.spark.sql.DataFrame = [trip: struct<id: string, text: string,createdat: string, lang: string>]
+
+//Write Data to Cosmos DB
+
+twitterTweets.select("tweets").writeStream.format(classOf[CosmosDBSinkProvider].getName).outputMode("append").options(configMap).option("checkpointLocation", "cosmoscheckpointlocation").start.awaitTermination(10000)
+println("Stream finished.")
+
+// Import bits useed for declaring schemas and working with JSON data
+import org.apache.spark.sql._
+import org.apache.spark.sql.types._
+import org.apache.spark.sql.functions._
+
+// Define a schema for the data
+val schema = (new StructType).add("id", StringType).add("text", StringType).add("created_at", StringType).add("lang", StringType)
+
+// Read from the Kafka stream source
+val kafka = spark.readStream.format("kafka").option("kafka.bootstrap.servers", kafkaBrokers).option("subscribe", kafkaTopic).option("startingOffsets","earliest").load()
+
+// Select the value of the Kafka message and apply the trip schema to it
+
+val twitterTweets = kafka.select(
+    from_json(col("value").cast("string"), schema) as "tweets")
+
+
+
+// The output of this cell is similar to the following value:
+// taxiData: org.apache.spark.sql.DataFrame = [trip: struct<id: string, text: string,createdat: string, lang: string>]
+
+//Write Data to Cosmos DB
+
+twitterTweets.select("tweets").writeStream.format(classOf[CosmosDBSinkProvider].getName).outputMode("append").options(configMap).option("checkpointLocation", "cosmoscheckpointlocation").start.awaitTermination(10000)
+println("Stream finished.")
